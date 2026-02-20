@@ -164,8 +164,7 @@ impl InfluxShutdownHandle {
                     http_config.username.as_ref(),
                     http_config.password.as_ref(),
                 )
-                .map(|e| Box::new(e) as Box<dyn InfluxExporter>)
-                .map_err(BuildError::from),
+                .map(|e| Box::new(e) as Box<dyn InfluxExporter>),
             };
             match exporter_result {
                 Ok(mut exporter) => {

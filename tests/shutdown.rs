@@ -46,7 +46,7 @@ async fn shutdown_flushes_pending_metrics() {
         .increment(7);
     recorder
         .register_gauge(&Key::from_name("pending_gauge"), &m)
-        .set(3.14);
+        .set(3.0);
 
     shutdown.close();
     mock.assert();
