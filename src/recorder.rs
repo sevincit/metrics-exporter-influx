@@ -6,7 +6,9 @@ use crate::registry::AtomicStorage;
 use crate::BuildError;
 use chrono::{Duration, Utc};
 use itertools::Itertools;
-use metrics::{Counter, Gauge, Histogram, Key, KeyName, Label, Metadata, Recorder, SharedString, Unit};
+use metrics::{
+    Counter, Gauge, Histogram, Key, KeyName, Label, Metadata, Recorder, SharedString, Unit,
+};
 use metrics_util::registry::Registry;
 use quanta::Instant;
 use reqwest::Url;
@@ -149,10 +151,10 @@ impl InfluxShutdownHandle {
     pub fn close(self) {
         if let Ok(rt_handle) = runtime::Handle::try_current() {
             let exporter_result = match &self.exporter_config {
-                ExporterConfig::File(f) => Ok(Box::new(InfluxFileExporter::new(
-                    self.handle,
-                    f.to_owned(),
-                )) as Box<dyn InfluxExporter>),
+                ExporterConfig::File(f) => {
+                    Ok(Box::new(InfluxFileExporter::new(self.handle, f.to_owned()))
+                        as Box<dyn InfluxExporter>)
+                }
                 #[cfg(feature = "http")]
                 ExporterConfig::Http(http_config) => InfluxHttpExporter::new(
                     self.handle,
