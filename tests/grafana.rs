@@ -15,7 +15,7 @@ async fn write_grafana() -> anyhow::Result<()> {
             .method(Method::POST)
             .matches(|request| match &request.body {
                 Some(body) => {
-                    let expected = vec![
+                    let expected = [
                         "counter,tag0=value0,tag1=value1,tag2=value2,tag3=value3 field0=false,field1=\"0\",value=0i",
                         "counter,tag0=value0,tag1=value1,tag2=value2,tag3=value3 field0=false,field1=\"0\",value=2i",
                         "gauge,tag0=value0 field0=false,value=-1000",

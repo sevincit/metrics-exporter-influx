@@ -32,7 +32,7 @@ async fn write_file() -> anyhow::Result<()> {
     temp.rewind()?;
     temp.read_to_string(&mut results)?;
 
-    let expected = vec![
+    let expected = [
         "counter,tag1=value1,tag2=value2,tag3=value3 field1=\"0\",value=0i",
         "counter,tag1=value1,tag2=value2,tag3=value3 field1=\"0\",value=2i",
         "gauge value=-1000",
