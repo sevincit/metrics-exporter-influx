@@ -6,7 +6,7 @@ use crate::registry::AtomicStorage;
 use crate::BuildError;
 use chrono::{Duration, Utc};
 use itertools::Itertools;
-use metrics::{Counter, Gauge, Histogram, Key, KeyName, Label, Recorder, SharedString, Unit};
+use metrics::{Counter, Gauge, Histogram, Key, KeyName, Label, Metadata, Recorder, SharedString, Unit};
 use metrics_util::registry::Registry;
 use quanta::Instant;
 use reqwest::Url;
@@ -91,28 +91,11 @@ impl InfluxRecorder {
             )?)),
         }
     }
-}
 
-impl Drop for InfluxRecorder {
-    fn drop(&mut self) {
-        if let Ok(handle) = runtime::Handle::try_current() {
-            match self.exporter() {
-                Ok(mut exporter) => {
-                    let thread_handle = thread::spawn(move || {
-                        handle.block_on(async move {
-                            if let Err(e) = exporter.write().await {
-                                error!("failed to flush metrics on drop `{e}`");
-                            }
-                        })
-                    });
-                    if thread_handle.join().is_err() {
-                        error!("failed to flush metrics on drop");
-                    }
-                }
-                Err(e) => {
-                    error!("failed to flush metrics on drop `{e}`");
-                }
-            }
+    pub fn shutdown_handle(&self) -> InfluxShutdownHandle {
+        InfluxShutdownHandle {
+            handle: self.handle(),
+            exporter_config: self.exporter_config.clone(),
         }
     }
 }
@@ -130,12 +113,9 @@ impl Recorder for InfluxRecorder {
         unimplemented!()
     }
 
-    fn register_counter(&self, key: &Key) -> Counter {
+    fn register_counter(&self, key: &Key, _metadata: &Metadata<'_>) -> Counter {
         let mut counter_registrations = self.inner.counter_registrations.lock().unwrap();
         if self.inner.registry.get_counter_handles().contains_key(key) {
-            // it's a little clunky to check for the key then fetch it rather than get and match
-            // on the Option. But returning the Arc<u64> directly seems to make the associated
-            // typing of `Recorder` unhappy
             self.inner
                 .registry
                 .get_or_create_counter(key, |c| c.to_owned().into())
@@ -147,16 +127,62 @@ impl Recorder for InfluxRecorder {
         }
     }
 
-    fn register_gauge(&self, key: &Key) -> Gauge {
+    fn register_gauge(&self, key: &Key, _metadata: &Metadata<'_>) -> Gauge {
         self.inner
             .registry
             .get_or_create_gauge(key, |c| c.to_owned().into())
     }
 
-    fn register_histogram(&self, key: &Key) -> Histogram {
+    fn register_histogram(&self, key: &Key, _metadata: &Metadata<'_>) -> Histogram {
         self.inner
             .registry
             .get_or_create_histogram(key, |b| b.to_owned().into())
+    }
+}
+
+pub struct InfluxShutdownHandle {
+    handle: InfluxHandle,
+    exporter_config: ExporterConfig,
+}
+
+impl InfluxShutdownHandle {
+    pub fn close(self) {
+        if let Ok(rt_handle) = runtime::Handle::try_current() {
+            let exporter_result = match &self.exporter_config {
+                ExporterConfig::File(f) => Ok(Box::new(InfluxFileExporter::new(
+                    self.handle,
+                    f.to_owned(),
+                )) as Box<dyn InfluxExporter>),
+                #[cfg(feature = "http")]
+                ExporterConfig::Http(http_config) => InfluxHttpExporter::new(
+                    self.handle,
+                    http_config.api_version.to_owned(),
+                    http_config.gzip,
+                    http_config.endpoint.to_owned(),
+                    http_config.username.as_ref(),
+                    http_config.password.as_ref(),
+                )
+                .map(|e| Box::new(e) as Box<dyn InfluxExporter>)
+                .map_err(BuildError::from),
+            };
+            match exporter_result {
+                Ok(mut exporter) => {
+                    let thread_handle = thread::spawn(move || {
+                        rt_handle.block_on(async move {
+                            if let Err(e) = exporter.write().await {
+                                error!("failed to flush metrics on shutdown `{e}`");
+                            }
+                        })
+                    });
+                    if thread_handle.join().is_err() {
+                        error!("failed to flush metrics on shutdown");
+                    }
+                }
+                Err(e) => {
+                    error!("failed to flush metrics on shutdown `{e}`");
+                }
+            }
+        }
     }
 }
 

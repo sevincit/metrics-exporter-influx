@@ -1,6 +1,6 @@
 [package]
 name = "metrics-exporter-influx"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 description = "A metrics-compatible exporter for sending metrics to Influx/Grafana Cloud"
 homepage = "https://github.com/sevco/metrics-exporter-influx"
@@ -15,8 +15,8 @@ default = ["http"]
 http = ["reqwest", "dep:http"]
 
 [dependencies]
-metrics = "0.21.1"
-metrics-util = "0.15.1"
+metrics = "0.24"
+metrics-util = "0.19"
 quanta = { version = "0.12", default-features = false }
 chrono = { version = "0.4.26", default-features = false, features = ["serde", "clock"] }
 itertools = "0.13.0"

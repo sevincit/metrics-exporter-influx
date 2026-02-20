@@ -26,7 +26,8 @@ use std::{collections::HashMap, sync::Arc};
 use quanta::Instant;
 
 use crate::matcher::Matcher;
-use metrics_util::{Histogram, Quantile, Summary};
+use metrics_util::storage::{Histogram, Summary};
+use metrics_util::Quantile;
 
 /// Distribution type.
 #[derive(Clone)]

@@ -3,11 +3,10 @@ use crate::distribution::DistributionBuilder;
 #[cfg(feature = "http")]
 use crate::http::APIVersion;
 use crate::matcher::Matcher;
-use crate::recorder::{ExporterConfig, HttpConfig, InfluxRecorder, Inner};
+use crate::recorder::{ExporterConfig, HttpConfig, InfluxRecorder, InfluxShutdownHandle, Inner};
 use crate::registry::AtomicStorage;
-use metrics::SetRecorderError;
 use metrics_util::registry::Registry;
-use metrics_util::{parse_quantiles, Quantile, RecoverableRecorder};
+use metrics_util::{parse_quantiles, Quantile};
 #[cfg(feature = "http")]
 use reqwest::Url;
 use std::collections::HashMap;
@@ -22,25 +21,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio::{runtime, time};
 
-type ExporterFuture = Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'static>>;
-
-pub struct InfluxRecorderHandle {
-    inner: Option<RecoverableRecorder<InfluxRecorder>>,
-}
-
-impl InfluxRecorderHandle {
-    pub fn close(self) {
-        drop(self)
-    }
-}
-
-impl Drop for InfluxRecorderHandle {
-    fn drop(&mut self) {
-        if let Some(inner) = self.inner.take() {
-            inner.into_inner();
-        }
-    }
-}
+pub type ExporterFuture = Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'static>>;
 
 #[derive(Debug, Error)]
 pub enum BuildError {
@@ -57,7 +38,7 @@ pub enum BuildError {
     FailedToCreateRuntime(String),
     /// Installing the recorder did not succeed.
     #[error("failed to install exporter as global recorder: {0}")]
-    FailedToSetGlobalRecorder(#[from] SetRecorderError),
+    FailedToSetGlobalRecorder(String),
     /// Empty buckets or quantiles
     #[error("empty buckets or quantiles")]
     EmptyBucketsOrQuantiles,
@@ -237,7 +218,7 @@ impl InfluxBuilder {
         Ok((recorder, exporter_future))
     }
 
-    pub fn install(self) -> Result<InfluxRecorderHandle, BuildError> {
+    pub fn install(self) -> Result<InfluxShutdownHandle, BuildError> {
         let recorder = if let Ok(handle) = runtime::Handle::try_current() {
             let (recorder, exporter) = {
                 let _g = handle.enter();
@@ -269,9 +250,10 @@ impl InfluxBuilder {
             recorder
         };
 
-        Ok(InfluxRecorderHandle {
-            inner: Some(RecoverableRecorder::from_recorder(recorder)?),
-        })
+        let shutdown_handle = recorder.shutdown_handle();
+        metrics::set_global_recorder(recorder)
+            .map_err(|e| BuildError::FailedToSetGlobalRecorder(format!("{e:?}")))?;
+        Ok(shutdown_handle)
     }
 }
 
