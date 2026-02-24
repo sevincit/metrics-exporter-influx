@@ -99,8 +99,8 @@ async fn build_and_spawn_shutdown_captures_late_writes() {
 }
 
 /// build() returns a recorder and exporter future. The caller spawns the future
-/// and wires the join handle into the shutdown handle via set_tokio_task().
-/// Exercises: close() → (Some(notify), ExporterJoinHandle::Tokio(jh))
+/// and passes the join handle to shutdown_handle_with_task().
+/// Exercises: close() → (Some(notify), ExporterJoinHandle::Task { .. })
 #[tokio::test(flavor = "multi_thread")]
 async fn build_shutdown_flushes_with_caller_spawned_exporter() {
     let server = MockServer::start();
@@ -121,8 +121,7 @@ async fn build_shutdown_flushes_with_caller_spawned_exporter() {
         .unwrap();
 
     let jh = tokio::spawn(exporter);
-    let mut shutdown = recorder.shutdown_handle();
-    shutdown.set_tokio_task(jh);
+    let shutdown = recorder.shutdown_handle_with_task(jh);
 
     let m = metadata();
 

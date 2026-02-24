@@ -109,6 +109,22 @@ impl InfluxRecorder {
             exporter_join: join,
         }
     }
+
+    pub fn shutdown_handle_with_task(
+        &self,
+        jh: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
+    ) -> InfluxShutdownHandle {
+        InfluxShutdownHandle {
+            handle: self.handle(),
+            exporter_config: self.exporter_config.clone(),
+            shutdown_notify: self.shutdown_notify.clone(),
+            exporter_join: ExporterJoinHandle::Task {
+                rt_handle: runtime::Handle::current(),
+                jh,
+                _owned_rt: None,
+            },
+        }
+    }
 }
 
 impl Recorder for InfluxRecorder {
@@ -170,14 +186,6 @@ pub struct InfluxShutdownHandle {
 }
 
 impl InfluxShutdownHandle {
-    pub fn set_tokio_task(&mut self, jh: tokio::task::JoinHandle<Result<(), anyhow::Error>>) {
-        self.exporter_join = ExporterJoinHandle::Task {
-            rt_handle: runtime::Handle::current(),
-            jh,
-            _owned_rt: None,
-        };
-    }
-
     pub fn close(self) {
         match (self.shutdown_notify, self.exporter_join) {
             // Background loop is running — signal it to flush and exit, then join.
