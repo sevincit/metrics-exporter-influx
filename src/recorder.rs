@@ -48,6 +48,10 @@ pub(crate) struct Inner {
     pub counter_registrations: SyncMutex<HashSet<Key>>,
 }
 
+/// A [`metrics::Recorder`] implementation that writes to InfluxDB line protocol.
+///
+/// Created via [`InfluxBuilder::build_recorder`], [`InfluxBuilder::build`],
+/// [`InfluxBuilder::build_and_spawn`], or [`InfluxBuilder::install`].
 pub struct InfluxRecorder {
     inner: Arc<Inner>,
     exporter_config: ExporterConfig,
@@ -97,6 +101,13 @@ impl InfluxRecorder {
         *self.exporter_join.lock().unwrap() = join;
     }
 
+    /// Returns a shutdown handle using any internally-wired join handle.
+    ///
+    /// When called on a recorder from [`InfluxBuilder::build_and_spawn`] or
+    /// [`InfluxBuilder::install`], the handle is fully wired. When called on a
+    /// recorder from [`InfluxBuilder::build`], the handle will not have a join
+    /// handle — use [`shutdown_handle_with_task`](Self::shutdown_handle_with_task)
+    /// instead.
     pub fn shutdown_handle(&self) -> InfluxShutdownHandle {
         let join = std::mem::replace(
             &mut *self.exporter_join.lock().unwrap(),
@@ -110,6 +121,15 @@ impl InfluxRecorder {
         }
     }
 
+    /// Returns a shutdown handle wired to the given tokio task.
+    ///
+    /// Use this with [`InfluxBuilder::build`] after spawning the exporter future:
+    ///
+    /// ```ignore
+    /// let (recorder, exporter) = builder.build()?;
+    /// let jh = tokio::spawn(exporter);
+    /// let shutdown = recorder.shutdown_handle_with_task(jh);
+    /// ```
     pub fn shutdown_handle_with_task(
         &self,
         jh: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
@@ -178,6 +198,10 @@ pub(crate) enum ExporterJoinHandle {
     None,
 }
 
+/// Handle for gracefully shutting down the background exporter loop.
+///
+/// Calling [`close`](Self::close) signals the exporter to perform a final
+/// flush and waits for it to complete.
 pub struct InfluxShutdownHandle {
     handle: InfluxHandle,
     exporter_config: ExporterConfig,
@@ -186,6 +210,7 @@ pub struct InfluxShutdownHandle {
 }
 
 impl InfluxShutdownHandle {
+    /// Signals the exporter to flush and exit, then joins the task.
     pub fn close(self) {
         match (self.shutdown_notify, self.exporter_join) {
             // Background loop is running — signal it to flush and exit, then join.

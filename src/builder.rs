@@ -23,6 +23,7 @@ use thiserror::Error;
 use tokio::sync::{Mutex, Notify};
 use tokio::{runtime, time};
 
+/// A future that drives the background exporter loop. Returned by [`InfluxBuilder::build`].
 pub type ExporterFuture = Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'static>>;
 
 #[derive(Debug, Error)]
@@ -195,6 +196,10 @@ impl InfluxBuilder {
         self
     }
 
+    /// Creates a recorder with no background exporter loop.
+    ///
+    /// The returned recorder can record metrics, but nothing will be exported
+    /// until [`InfluxShutdownHandle::close`] performs a one-shot flush.
     pub fn build_recorder(self) -> InfluxRecorder {
         InfluxRecorder::new(
             Arc::new(Inner {
@@ -213,6 +218,11 @@ impl InfluxBuilder {
         )
     }
 
+    /// Creates a recorder and an exporter future, without spawning.
+    ///
+    /// The caller is responsible for spawning the future, passing the resulting
+    /// join handle to [`InfluxRecorder::shutdown_handle_with_task`], and calling
+    /// [`metrics::set_global_recorder`].
     pub fn build(self) -> Result<(InfluxRecorder, ExporterFuture), BuildError> {
         let shutdown = Arc::new(Notify::new());
         let interval = time::interval(self.duration.unwrap_or(Duration::from_secs(10)));
@@ -262,12 +272,21 @@ impl InfluxBuilder {
         Ok(recorder)
     }
 
+    /// Creates a recorder and spawns the exporter as a tokio task.
+    ///
+    /// The returned [`InfluxShutdownHandle`] is fully wired for graceful
+    /// shutdown. The caller is responsible for calling
+    /// [`metrics::set_global_recorder`].
     pub fn build_and_spawn(self) -> Result<(InfluxRecorder, InfluxShutdownHandle), BuildError> {
         let recorder = self.spawn()?;
         let shutdown_handle = recorder.shutdown_handle();
         Ok((recorder, shutdown_handle))
     }
 
+    /// Creates a recorder, spawns the exporter, and sets the global recorder.
+    ///
+    /// This is the most common entry point. The returned
+    /// [`InfluxShutdownHandle`] is fully wired for graceful shutdown.
     pub fn install(self) -> Result<InfluxShutdownHandle, BuildError> {
         let recorder = self.spawn()?;
         let shutdown_handle = recorder.shutdown_handle();
