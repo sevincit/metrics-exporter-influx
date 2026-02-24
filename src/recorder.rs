@@ -50,12 +50,12 @@ pub(crate) struct Inner {
 
 /// A [`metrics::Recorder`] implementation that writes to InfluxDB line protocol.
 ///
-/// Created via [`InfluxBuilder::build_recorder`], [`InfluxBuilder::build`],
-/// [`InfluxBuilder::build_and_spawn`], or [`InfluxBuilder::install`].
+/// Created via [`InfluxBuilder::build`], [`InfluxBuilder::build_and_spawn`],
+/// or [`InfluxBuilder::install`].
 pub struct InfluxRecorder {
     inner: Arc<Inner>,
     exporter_config: ExporterConfig,
-    shutdown_notify: Option<Arc<Notify>>,
+    shutdown_notify: Arc<Notify>,
     exporter_join: SyncMutex<ExporterJoinHandle>,
 }
 
@@ -63,7 +63,7 @@ impl InfluxRecorder {
     pub(crate) fn new(
         inner: Arc<Inner>,
         exporter_config: ExporterConfig,
-        shutdown_notify: Option<Arc<Notify>>,
+        shutdown_notify: Arc<Notify>,
     ) -> Self {
         Self {
             inner,
@@ -205,24 +205,21 @@ pub(crate) enum ExporterJoinHandle {
 pub struct InfluxShutdownHandle {
     handle: InfluxHandle,
     exporter_config: ExporterConfig,
-    shutdown_notify: Option<Arc<Notify>>,
+    shutdown_notify: Arc<Notify>,
     exporter_join: ExporterJoinHandle,
 }
 
 impl InfluxShutdownHandle {
     /// Signals the exporter to flush and exit, then joins the task.
     pub fn close(self) {
-        match (self.shutdown_notify, self.exporter_join) {
+        match self.exporter_join {
             // Background loop is running — signal it to flush and exit, then join.
-            (
-                Some(notify),
-                ExporterJoinHandle::Task {
-                    jh,
-                    rt_handle,
-                    _owned_rt,
-                },
-            ) => {
-                notify.notify_one();
+            ExporterJoinHandle::Task {
+                jh,
+                rt_handle,
+                _owned_rt,
+            } => {
+                self.shutdown_notify.notify_one();
                 let join_thread = thread::spawn(move || {
                     rt_handle.block_on(async {
                         match jh.await {
@@ -237,13 +234,10 @@ impl InfluxShutdownHandle {
                 }
                 // _owned_rt drops here — shuts down the runtime if we created it
             }
-            // No join handle — the caller used build() without set_tokio_task(),
-            // or used build_recorder(). Signal the loop if possible, then fall
-            // back to a one-shot flush.
-            (notify_opt, _) => {
-                if let Some(notify) = notify_opt {
-                    notify.notify_one();
-                }
+            // No join handle — the caller used build() without shutdown_handle_with_task().
+            // Signal the loop, then fall back to a one-shot flush.
+            ExporterJoinHandle::None => {
+                self.shutdown_notify.notify_one();
                 Self::flush_oneshot(self.handle, &self.exporter_config);
             }
         }

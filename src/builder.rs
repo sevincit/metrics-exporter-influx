@@ -196,28 +196,6 @@ impl InfluxBuilder {
         self
     }
 
-    /// Creates a recorder with no background exporter loop.
-    ///
-    /// The returned recorder can record metrics, but nothing will be exported
-    /// until [`InfluxShutdownHandle::close`] performs a one-shot flush.
-    pub fn build_recorder(self) -> InfluxRecorder {
-        InfluxRecorder::new(
-            Arc::new(Inner {
-                registry: Registry::new(AtomicStorage),
-                global_tags: self.global_tags.unwrap_or_default(),
-                global_fields: self.global_fields.unwrap_or_default(),
-                distribution_builder: DistributionBuilder::new(
-                    self.quantiles,
-                    self.buckets,
-                    self.bucket_overrides,
-                ),
-                counter_registrations: Default::default(),
-            }),
-            self.exporter_config,
-            None,
-        )
-    }
-
     /// Creates a recorder and an exporter future, without spawning.
     ///
     /// The caller is responsible for spawning the future, passing the resulting
@@ -239,7 +217,7 @@ impl InfluxBuilder {
                 counter_registrations: Default::default(),
             }),
             self.exporter_config,
-            Some(shutdown.clone()),
+            shutdown.clone(),
         );
         let mut exporter = recorder.exporter()?;
         let exporter_future = Box::pin(async move { exporter.run(interval, shutdown).await });

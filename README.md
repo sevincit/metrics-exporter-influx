@@ -99,7 +99,7 @@ this is not the preferred path.
 
 Calling `close()` on an `InfluxShutdownHandle` signals the background exporter loop
 to perform a final flush, then joins the task. This ensures no metrics are lost when
-the process exits (e.g. Lambda receiving SIGTERM).
+the process exits (e.g. receiving SIGTERM).
 
 ```rust
 let handle = InfluxBuilder::new()

@@ -18,42 +18,8 @@ fn grafana_builder(server: &MockServer) -> InfluxBuilder {
         .with_gzip(false)
 }
 
-/// Shutdown handle flushes metrics that were never flushed by a periodic tick.
-/// Simulates: Lambda receives SIGTERM before any exporter tick fires.
-#[tokio::test(flavor = "multi_thread")]
-async fn build_recorder_shutdown_flushes_pending_metrics() {
-    let server = MockServer::start();
-    let mock = server.mock(|when, then| {
-        when.method(Method::POST).matches(|req| match &req.body {
-            Some(body) => {
-                let s = String::from_utf8_lossy(body);
-                s.contains("pending_counter") && s.contains("pending_gauge")
-            }
-            None => false,
-        });
-        then.status(204);
-    });
-
-    // Very long interval — periodic flush will never fire during this test
-    let recorder = grafana_builder(&server)
-        .with_duration(Duration::from_secs(3600))
-        .build_recorder();
-    let shutdown = recorder.shutdown_handle();
-    let m = metadata();
-
-    recorder
-        .register_counter(&Key::from_name("pending_counter"), &m)
-        .increment(7);
-    recorder
-        .register_gauge(&Key::from_name("pending_gauge"), &m)
-        .set(3.0);
-
-    shutdown.close();
-    mock.assert();
-}
-
 /// Data written between the last periodic flush and shutdown is not lost.
-/// Simulates: Lambda processes a request (writes metrics), then gets SIGTERM
+/// Simulates: process writes metrics, then gets SIGTERM
 /// before the next exporter tick.
 /// Exercises: close() → (Some(notify), ExporterJoinHandle::Tokio(jh))
 #[tokio::test(flavor = "multi_thread")]
