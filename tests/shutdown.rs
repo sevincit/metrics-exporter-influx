@@ -84,8 +84,8 @@ async fn build_shutdown_flushes_with_caller_spawned_exporter() {
         .build()
         .unwrap();
 
-    let jh = tokio::spawn(exporter);
-    let shutdown = recorder.shutdown_handle(jh);
+    let exporter_task = tokio::spawn(exporter);
+    let shutdown = recorder.shutdown_handle(exporter_task);
 
     let m = metadata();
 

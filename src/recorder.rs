@@ -75,7 +75,7 @@ impl InfluxRecorder {
         self.shutdown_notify.clone()
     }
 
-    pub fn handle(&self) -> InfluxHandle {
+    pub(crate) fn handle(&self) -> InfluxHandle {
         InfluxHandle {
             inner: self.inner.to_owned(),
         }
@@ -105,16 +105,16 @@ impl InfluxRecorder {
     ///
     /// ```ignore
     /// let (recorder, exporter) = builder.build()?;
-    /// let jh = tokio::spawn(exporter);
-    /// let shutdown = recorder.shutdown_handle(jh);
+    /// let exporter_task = tokio::spawn(exporter);
+    /// let shutdown = recorder.shutdown_handle(exporter_task);
     /// ```
     pub fn shutdown_handle(
         &self,
-        jh: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
+        exporter_task: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
     ) -> InfluxShutdownHandle {
         InfluxShutdownHandle::new(
             self.shutdown_notify.clone(),
-            jh,
+            exporter_task,
             runtime::Handle::current(),
             None,
         )
@@ -167,55 +167,55 @@ impl Recorder for InfluxRecorder {
 /// flush and waits for it to complete.
 pub struct InfluxShutdownHandle {
     shutdown_notify: Arc<Notify>,
-    jh: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
-    rt_handle: runtime::Handle,
+    exporter_task: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
+    runtime: runtime::Handle,
     /// Holds the runtime alive when we created it ourselves.
     /// Dropped after the task is joined in close().
-    _owned_rt: Option<runtime::Runtime>,
+    _owned_runtime: Option<runtime::Runtime>,
 }
 
 impl InfluxShutdownHandle {
     pub(crate) fn new(
         shutdown_notify: Arc<Notify>,
-        jh: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
-        rt_handle: runtime::Handle,
-        owned_rt: Option<runtime::Runtime>,
+        exporter_task: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
+        runtime: runtime::Handle,
+        owned_runtime: Option<runtime::Runtime>,
     ) -> Self {
         Self {
             shutdown_notify,
-            jh,
-            rt_handle,
-            _owned_rt: owned_rt,
+            exporter_task,
+            runtime,
+            _owned_runtime: owned_runtime,
         }
     }
 
     /// Signals the exporter to flush and exit, then joins the task.
     pub fn close(self) {
         self.shutdown_notify.notify_one();
-        let jh = self.jh;
-        let rt_handle = self.rt_handle;
-        let join_thread = thread::spawn(move || {
-            rt_handle.block_on(async {
-                match jh.await {
+        let exporter_task = self.exporter_task;
+        let runtime = self.runtime;
+        let blocking_thread = thread::spawn(move || {
+            runtime.block_on(async {
+                match exporter_task.await {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => error!("exporter error on shutdown: {e}"),
                     Err(e) => error!("exporter task panicked: {e}"),
                 }
             });
         });
-        if join_thread.join().is_err() {
+        if blocking_thread.join().is_err() {
             error!("failed to join exporter on shutdown");
         }
-        // _owned_rt drops here — shuts down the runtime if we created it
+        // _owned_runtime drops here — shuts down the runtime if we created it
     }
 }
 
-pub struct InfluxHandle {
+pub(crate) struct InfluxHandle {
     inner: Arc<Inner>,
 }
 
 impl InfluxHandle {
-    pub fn render(&self) -> (usize, String) {
+    pub(crate) fn render(&self) -> (usize, String) {
         let gauges = self
             .inner
             .registry
@@ -361,10 +361,6 @@ impl InfluxHandle {
             .sorted()
             .join("\n");
         (count, metrics)
-    }
-
-    pub fn clear(&self) {
-        self.inner.registry.clear();
     }
 }
 

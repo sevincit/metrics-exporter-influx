@@ -91,7 +91,7 @@ this is not the preferred path.
 
 | Method | Returns | Description |
 |---|---|---|
-| `build()` | `(InfluxRecorder, ExporterFuture)` | Caller spawns the exporter future, passes the join handle to `shutdown_handle()`, and calls `set_global_recorder()`. |
+| `build()` | `(InfluxRecorder, ExporterFuture)` | Caller spawns the exporter future, passes the task to [`shutdown_handle()`](#graceful-shutdown), and calls `set_global_recorder()`. |
 | `build_and_spawn()` | `(InfluxRecorder, InfluxShutdownHandle)` | Spawns the exporter internally. Caller calls `set_global_recorder()`. |
 | `install()` | `InfluxShutdownHandle` | Spawns the exporter and sets the global recorder. The most common entry point. |
 
@@ -111,16 +111,16 @@ let handle = InfluxBuilder::new()
 handle.close(); // final flush + join
 ```
 
-For `build()` callers who spawn the exporter themselves, wire the join handle back
-in for a clean shutdown:
+For `build()` callers who spawn the exporter themselves, wire the task back in for
+a clean shutdown:
 
 ```rust
 let (recorder, exporter) = InfluxBuilder::new()
     .with_grafana_cloud_api(endpoint, username, password)?
     .build()?;
 
-let jh = tokio::spawn(exporter);
-let shutdown = recorder.shutdown_handle(jh);
+let exporter_task = tokio::spawn(exporter);
+let shutdown = recorder.shutdown_handle(exporter_task);
 
 metrics::set_global_recorder(recorder).unwrap();
 

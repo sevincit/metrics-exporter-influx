@@ -197,7 +197,7 @@ impl InfluxBuilder {
     /// Creates a recorder and an exporter future, without spawning.
     ///
     /// The caller is responsible for spawning the future, passing the resulting
-    /// join handle to [`InfluxRecorder::shutdown_handle`], and calling
+    /// task join handle to [`InfluxRecorder::shutdown_handle`], and calling
     /// [`metrics::set_global_recorder`].
     pub fn build(self) -> Result<(InfluxRecorder, ExporterFuture), BuildError> {
         let shutdown = Arc::new(Notify::new());
@@ -222,8 +222,13 @@ impl InfluxBuilder {
         Ok((recorder, exporter_future))
     }
 
-    fn spawn(self) -> Result<(InfluxRecorder, InfluxShutdownHandle), BuildError> {
-        let (owned_rt, handle) = if let Ok(h) = runtime::Handle::try_current() {
+    /// Creates a recorder and spawns the exporter as a tokio task.
+    ///
+    /// The returned [`InfluxShutdownHandle`] is fully wired for graceful
+    /// shutdown. The caller is responsible for calling
+    /// [`metrics::set_global_recorder`].
+    pub fn build_and_spawn(self) -> Result<(InfluxRecorder, InfluxShutdownHandle), BuildError> {
+        let (owned_runtime, runtime) = if let Ok(h) = runtime::Handle::try_current() {
             (None, h)
         } else {
             let rt = runtime::Builder::new_multi_thread()
@@ -236,22 +241,17 @@ impl InfluxBuilder {
         };
 
         let (recorder, exporter) = {
-            let _g = handle.enter();
+            let _g = runtime.enter();
             self.build()?
         };
-        let jh = handle.spawn(exporter);
-        let shutdown_handle =
-            InfluxShutdownHandle::new(recorder.shutdown_notify(), jh, handle, owned_rt);
+        let exporter_task = runtime.spawn(exporter);
+        let shutdown_handle = InfluxShutdownHandle::new(
+            recorder.shutdown_notify(),
+            exporter_task,
+            runtime,
+            owned_runtime,
+        );
         Ok((recorder, shutdown_handle))
-    }
-
-    /// Creates a recorder and spawns the exporter as a tokio task.
-    ///
-    /// The returned [`InfluxShutdownHandle`] is fully wired for graceful
-    /// shutdown. The caller is responsible for calling
-    /// [`metrics::set_global_recorder`].
-    pub fn build_and_spawn(self) -> Result<(InfluxRecorder, InfluxShutdownHandle), BuildError> {
-        self.spawn()
     }
 
     /// Creates a recorder, spawns the exporter, and sets the global recorder.
@@ -259,7 +259,7 @@ impl InfluxBuilder {
     /// This is the most common entry point. The returned
     /// [`InfluxShutdownHandle`] is fully wired for graceful shutdown.
     pub fn install(self) -> Result<InfluxShutdownHandle, BuildError> {
-        let (recorder, shutdown_handle) = self.spawn()?;
+        let (recorder, shutdown_handle) = self.build_and_spawn()?;
         metrics::set_global_recorder(recorder)
             .map_err(|e| BuildError::FailedToSetGlobalRecorder(format!("{e:?}")))?;
         Ok(shutdown_handle)
