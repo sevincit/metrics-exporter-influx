@@ -3,7 +3,9 @@ use crate::distribution::DistributionBuilder;
 #[cfg(feature = "http")]
 use crate::http::APIVersion;
 use crate::matcher::Matcher;
-use crate::recorder::{ExporterConfig, HttpConfig, InfluxRecorder, InfluxShutdownHandle, Inner};
+use crate::recorder::{
+    ExporterConfig, ExporterJoinHandle, HttpConfig, InfluxRecorder, InfluxShutdownHandle, Inner,
+};
 use crate::registry::AtomicStorage;
 use metrics_util::registry::Registry;
 use metrics_util::{parse_quantiles, Quantile};
@@ -12,13 +14,13 @@ use reqwest::Url;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::future::Future;
+use std::io;
 use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{io, thread};
 use thiserror::Error;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::{runtime, time};
 
 pub type ExporterFuture = Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'static>>;
@@ -207,49 +209,67 @@ impl InfluxBuilder {
                 counter_registrations: Default::default(),
             }),
             self.exporter_config,
+            None,
         )
     }
 
     pub fn build(self) -> Result<(InfluxRecorder, ExporterFuture), BuildError> {
+        let shutdown = Arc::new(Notify::new());
         let interval = time::interval(self.duration.unwrap_or(Duration::from_secs(10)));
-        let recorder = self.build_recorder();
+        let recorder = InfluxRecorder::new(
+            Arc::new(Inner {
+                registry: Registry::new(AtomicStorage),
+                global_tags: self.global_tags.unwrap_or_default(),
+                global_fields: self.global_fields.unwrap_or_default(),
+                distribution_builder: DistributionBuilder::new(
+                    self.quantiles,
+                    self.buckets,
+                    self.bucket_overrides,
+                ),
+                counter_registrations: Default::default(),
+            }),
+            self.exporter_config,
+            Some(shutdown.clone()),
+        );
         let mut exporter = recorder.exporter()?;
-        let exporter_future = Box::pin(async move { exporter.run(interval).await });
+        let exporter_future = Box::pin(async move { exporter.run(interval, shutdown).await });
         Ok((recorder, exporter_future))
     }
 
-    pub fn install(self) -> Result<InfluxShutdownHandle, BuildError> {
-        let recorder = if let Ok(handle) = runtime::Handle::try_current() {
-            let (recorder, exporter) = {
-                let _g = handle.enter();
-                self.build()?
-            };
-            handle.spawn(exporter);
-            recorder
+    fn spawn(self) -> Result<InfluxRecorder, BuildError> {
+        let (owned_rt, handle) = if let Ok(h) = runtime::Handle::try_current() {
+            (None, h)
         } else {
-            let thread_name = format!(
-                "metrics-exporter-influx-{}",
-                self.exporter_config.as_type_str()
-            );
-
-            let runtime = runtime::Builder::new_current_thread()
+            let rt = runtime::Builder::new_multi_thread()
+                .worker_threads(1)
                 .enable_all()
                 .build()
                 .map_err(|e| BuildError::FailedToCreateRuntime(e.to_string()))?;
-
-            let (recorder, exporter) = {
-                let _g = runtime.enter();
-                self.build()?
-            };
-
-            thread::Builder::new()
-                .name(thread_name)
-                .spawn(move || runtime.block_on(exporter))
-                .map_err(|e| BuildError::FailedToCreateRuntime(e.to_string()))?;
-
-            recorder
+            let h = rt.handle().clone();
+            (Some(rt), h)
         };
 
+        let (recorder, exporter) = {
+            let _g = handle.enter();
+            self.build()?
+        };
+        let jh = handle.spawn(exporter);
+        recorder.set_exporter_join(ExporterJoinHandle::Task {
+            jh,
+            rt_handle: handle,
+            _owned_rt: owned_rt,
+        });
+        Ok(recorder)
+    }
+
+    pub fn build_and_spawn(self) -> Result<(InfluxRecorder, InfluxShutdownHandle), BuildError> {
+        let recorder = self.spawn()?;
+        let shutdown_handle = recorder.shutdown_handle();
+        Ok((recorder, shutdown_handle))
+    }
+
+    pub fn install(self) -> Result<InfluxShutdownHandle, BuildError> {
+        let recorder = self.spawn()?;
         let shutdown_handle = recorder.shutdown_handle();
         metrics::set_global_recorder(recorder)
             .map_err(|e| BuildError::FailedToSetGlobalRecorder(format!("{e:?}")))?;

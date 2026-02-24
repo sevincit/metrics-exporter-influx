@@ -3,7 +3,7 @@ use metrics_exporter_influx::InfluxBuilder;
 use std::io::{Read, Seek};
 use tempfile::tempfile;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn write_file() -> anyhow::Result<()> {
     let mut temp = tempfile()?;
     let handle = InfluxBuilder::new()

@@ -20,7 +20,7 @@ metrics-util = "0.19"
 quanta = { version = "0.12", default-features = false }
 chrono = { version = "0.4.26", default-features = false, features = ["serde", "clock"] }
 itertools = "0.13.0"
-tokio = { version = "1.28.2", features = ["time"] }
+tokio = { version = "1.28.2", features = ["time", "sync", "macros", "rt-multi-thread"] }
 tokio-retry = "0.3.0"
 anyhow = "1.0.71"
 thiserror = "1.0.40"
