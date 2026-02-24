@@ -1,3 +1,5 @@
+//! Separate binary: install() calls set_global_recorder(), which is once-per-process.
+
 use httpmock::{Method, MockServer};
 use metrics::{counter, gauge};
 use metrics_exporter_influx::InfluxBuilder;

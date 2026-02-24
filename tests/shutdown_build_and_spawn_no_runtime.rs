@@ -1,3 +1,5 @@
+//! Separate binary: must run without a tokio runtime on the thread.
+
 use httpmock::{Method, MockServer};
 use metrics::{Key, Level, Metadata, Recorder};
 use metrics_exporter_influx::InfluxBuilder;
@@ -7,9 +9,9 @@ fn metadata() -> Metadata<'static> {
     Metadata::new(module_path!(), Level::INFO, None)
 }
 
-/// build_and_spawn() without a tokio runtime creates its own single-thread
-/// runtime on a background thread. close() exercises the Thread join path:
-/// notify_one() → exporter final flush → thread::JoinHandle::join().
+/// build_and_spawn() without a tokio runtime creates its own multi-thread
+/// runtime (1 worker). close() signals the exporter via Notify, joins the
+/// task, then the owned runtime is dropped.
 #[test]
 fn build_and_spawn_shutdown_flushes_without_runtime() {
     let server = MockServer::start();

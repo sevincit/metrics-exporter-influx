@@ -1,11 +1,14 @@
+//! Separate binary: install() calls set_global_recorder() (once-per-process),
+//! and this test must run without a tokio runtime on the thread.
+
 use httpmock::{Method, MockServer};
 use metrics::{counter, gauge};
 use metrics_exporter_influx::InfluxBuilder;
 use std::time::Duration;
 
-/// install() without a tokio runtime creates its own single-thread runtime on
-/// a background thread via block_on_in_thread. close() exercises the Thread
-/// join path: notify_one() → exporter final flush → thread::JoinHandle::join().
+/// install() without a tokio runtime creates its own multi-thread runtime
+/// (1 worker). close() signals the exporter via Notify, joins the task,
+/// then the owned runtime is dropped.
 #[test]
 fn install_shutdown_flushes_without_runtime() {
     let server = MockServer::start();
