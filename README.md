@@ -91,7 +91,7 @@ this is not the preferred path.
 
 | Method | Returns | Description |
 |---|---|---|
-| `build()` | `(InfluxRecorder, ExporterFuture)` | Caller spawns the exporter future, passes the join handle to `shutdown_handle_with_task()`, and calls `set_global_recorder()`. |
+| `build()` | `(InfluxRecorder, ExporterFuture)` | Caller spawns the exporter future, passes the join handle to `shutdown_handle()`, and calls `set_global_recorder()`. |
 | `build_and_spawn()` | `(InfluxRecorder, InfluxShutdownHandle)` | Spawns the exporter internally. Caller calls `set_global_recorder()`. |
 | `install()` | `InfluxShutdownHandle` | Spawns the exporter and sets the global recorder. The most common entry point. |
 
@@ -120,7 +120,7 @@ let (recorder, exporter) = InfluxBuilder::new()
     .build()?;
 
 let jh = tokio::spawn(exporter);
-let shutdown = recorder.shutdown_handle_with_task(jh);
+let shutdown = recorder.shutdown_handle(jh);
 
 metrics::set_global_recorder(recorder).unwrap();
 

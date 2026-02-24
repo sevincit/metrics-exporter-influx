@@ -6,7 +6,6 @@ use std::time::Duration;
 /// install() without a tokio runtime creates its own single-thread runtime on
 /// a background thread via block_on_in_thread. close() exercises the Thread
 /// join path: notify_one() → exporter final flush → thread::JoinHandle::join().
-/// Exercises: close() → (Some(notify), ExporterJoinHandle::Thread(jh))
 #[test]
 fn install_shutdown_flushes_without_runtime() {
     let server = MockServer::start();

@@ -6,7 +6,6 @@ use std::time::Duration;
 /// install() on a multi-thread runtime wires Notify + JoinHandle into the
 /// shutdown handle. close() signals the background loop via Notify, the loop
 /// does one final write() and breaks, then close() joins the task.
-/// Exercises: close() → (Some(notify), ExporterJoinHandle::Tokio(jh))
 #[tokio::test(flavor = "multi_thread")]
 async fn install_shutdown_flushes_pending_metrics() {
     let server = MockServer::start();

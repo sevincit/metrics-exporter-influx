@@ -10,7 +10,6 @@ fn metadata() -> Metadata<'static> {
 /// build_and_spawn() without a tokio runtime creates its own single-thread
 /// runtime on a background thread. close() exercises the Thread join path:
 /// notify_one() → exporter final flush → thread::JoinHandle::join().
-/// Exercises: close() → (Some(notify), ExporterJoinHandle::Thread(jh))
 #[test]
 fn build_and_spawn_shutdown_flushes_without_runtime() {
     let server = MockServer::start();

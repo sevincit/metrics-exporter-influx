@@ -21,7 +21,6 @@ fn grafana_builder(server: &MockServer) -> InfluxBuilder {
 /// Data written between the last periodic flush and shutdown is not lost.
 /// Simulates: process writes metrics, then gets SIGTERM
 /// before the next exporter tick.
-/// Exercises: close() → (Some(notify), ExporterJoinHandle::Tokio(jh))
 #[tokio::test(flavor = "multi_thread")]
 async fn build_and_spawn_shutdown_captures_late_writes() {
     let server = MockServer::start();
@@ -65,8 +64,7 @@ async fn build_and_spawn_shutdown_captures_late_writes() {
 }
 
 /// build() returns a recorder and exporter future. The caller spawns the future
-/// and passes the join handle to shutdown_handle_with_task().
-/// Exercises: close() → (Some(notify), ExporterJoinHandle::Task { .. })
+/// and passes the join handle to shutdown_handle().
 #[tokio::test(flavor = "multi_thread")]
 async fn build_shutdown_flushes_with_caller_spawned_exporter() {
     let server = MockServer::start();
@@ -87,7 +85,7 @@ async fn build_shutdown_flushes_with_caller_spawned_exporter() {
         .unwrap();
 
     let jh = tokio::spawn(exporter);
-    let shutdown = recorder.shutdown_handle_with_task(jh);
+    let shutdown = recorder.shutdown_handle(jh);
 
     let m = metadata();
 
@@ -115,7 +113,6 @@ async fn build_shutdown_flushes_with_caller_spawned_exporter() {
 
 /// build_and_spawn() returns a fully-wired shutdown handle (Notify + JoinHandle).
 /// close() signals the background loop which does the final flush, then joins.
-/// Exercises: close() → (Some(notify), ExporterJoinHandle::Tokio(jh))
 #[tokio::test(flavor = "multi_thread")]
 async fn build_and_spawn_shutdown_flushes_pending_metrics() {
     let server = MockServer::start();

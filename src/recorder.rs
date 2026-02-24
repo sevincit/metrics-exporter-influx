@@ -56,7 +56,6 @@ pub struct InfluxRecorder {
     inner: Arc<Inner>,
     exporter_config: ExporterConfig,
     shutdown_notify: Arc<Notify>,
-    exporter_join: SyncMutex<ExporterJoinHandle>,
 }
 
 impl InfluxRecorder {
@@ -69,8 +68,11 @@ impl InfluxRecorder {
             inner,
             exporter_config,
             shutdown_notify,
-            exporter_join: SyncMutex::new(ExporterJoinHandle::None),
         }
+    }
+
+    pub(crate) fn shutdown_notify(&self) -> Arc<Notify> {
+        self.shutdown_notify.clone()
     }
 
     pub fn handle(&self) -> InfluxHandle {
@@ -97,30 +99,6 @@ impl InfluxRecorder {
         }
     }
 
-    pub(crate) fn set_exporter_join(&self, join: ExporterJoinHandle) {
-        *self.exporter_join.lock().unwrap() = join;
-    }
-
-    /// Returns a shutdown handle using any internally-wired join handle.
-    ///
-    /// When called on a recorder from [`InfluxBuilder::build_and_spawn`] or
-    /// [`InfluxBuilder::install`], the handle is fully wired. When called on a
-    /// recorder from [`InfluxBuilder::build`], the handle will not have a join
-    /// handle — use [`shutdown_handle_with_task`](Self::shutdown_handle_with_task)
-    /// instead.
-    pub fn shutdown_handle(&self) -> InfluxShutdownHandle {
-        let join = std::mem::replace(
-            &mut *self.exporter_join.lock().unwrap(),
-            ExporterJoinHandle::None,
-        );
-        InfluxShutdownHandle {
-            handle: self.handle(),
-            exporter_config: self.exporter_config.clone(),
-            shutdown_notify: self.shutdown_notify.clone(),
-            exporter_join: join,
-        }
-    }
-
     /// Returns a shutdown handle wired to the given tokio task.
     ///
     /// Use this with [`InfluxBuilder::build`] after spawning the exporter future:
@@ -128,22 +106,18 @@ impl InfluxRecorder {
     /// ```ignore
     /// let (recorder, exporter) = builder.build()?;
     /// let jh = tokio::spawn(exporter);
-    /// let shutdown = recorder.shutdown_handle_with_task(jh);
+    /// let shutdown = recorder.shutdown_handle(jh);
     /// ```
-    pub fn shutdown_handle_with_task(
+    pub fn shutdown_handle(
         &self,
         jh: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
     ) -> InfluxShutdownHandle {
-        InfluxShutdownHandle {
-            handle: self.handle(),
-            exporter_config: self.exporter_config.clone(),
-            shutdown_notify: self.shutdown_notify.clone(),
-            exporter_join: ExporterJoinHandle::Task {
-                rt_handle: runtime::Handle::current(),
-                jh,
-                _owned_rt: None,
-            },
-        }
+        InfluxShutdownHandle::new(
+            self.shutdown_notify.clone(),
+            jh,
+            runtime::Handle::current(),
+            None,
+        )
     }
 }
 
@@ -187,116 +161,52 @@ impl Recorder for InfluxRecorder {
     }
 }
 
-pub(crate) enum ExporterJoinHandle {
-    Task {
-        jh: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
-        rt_handle: runtime::Handle,
-        /// Holds the runtime alive when we created it ourselves.
-        /// Dropped after the task is joined in close().
-        _owned_rt: Option<runtime::Runtime>,
-    },
-    None,
-}
-
 /// Handle for gracefully shutting down the background exporter loop.
 ///
 /// Calling [`close`](Self::close) signals the exporter to perform a final
 /// flush and waits for it to complete.
 pub struct InfluxShutdownHandle {
-    handle: InfluxHandle,
-    exporter_config: ExporterConfig,
     shutdown_notify: Arc<Notify>,
-    exporter_join: ExporterJoinHandle,
+    jh: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
+    rt_handle: runtime::Handle,
+    /// Holds the runtime alive when we created it ourselves.
+    /// Dropped after the task is joined in close().
+    _owned_rt: Option<runtime::Runtime>,
 }
 
 impl InfluxShutdownHandle {
-    /// Signals the exporter to flush and exit, then joins the task.
-    pub fn close(self) {
-        match self.exporter_join {
-            // Background loop is running — signal it to flush and exit, then join.
-            ExporterJoinHandle::Task {
-                jh,
-                rt_handle,
-                _owned_rt,
-            } => {
-                self.shutdown_notify.notify_one();
-                let join_thread = thread::spawn(move || {
-                    rt_handle.block_on(async {
-                        match jh.await {
-                            Ok(Ok(())) => {}
-                            Ok(Err(e)) => error!("exporter error on shutdown: {e}"),
-                            Err(e) => error!("exporter task panicked: {e}"),
-                        }
-                    });
-                });
-                if join_thread.join().is_err() {
-                    error!("failed to join exporter on shutdown");
-                }
-                // _owned_rt drops here — shuts down the runtime if we created it
-            }
-            // No join handle — the caller used build() without shutdown_handle_with_task().
-            // Signal the loop, then fall back to a one-shot flush.
-            ExporterJoinHandle::None => {
-                self.shutdown_notify.notify_one();
-                Self::flush_oneshot(self.handle, &self.exporter_config);
-            }
+    pub(crate) fn new(
+        shutdown_notify: Arc<Notify>,
+        jh: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
+        rt_handle: runtime::Handle,
+        owned_rt: Option<runtime::Runtime>,
+    ) -> Self {
+        Self {
+            shutdown_notify,
+            jh,
+            rt_handle,
+            _owned_rt: owned_rt,
         }
     }
 
-    fn flush_oneshot(handle: InfluxHandle, exporter_config: &ExporterConfig) {
-        let exporter_result = match exporter_config {
-            ExporterConfig::File(f) => {
-                Ok(Box::new(InfluxFileExporter::new(handle, f.to_owned()))
-                    as Box<dyn InfluxExporter>)
-            }
-            #[cfg(feature = "http")]
-            ExporterConfig::Http(http_config) => InfluxHttpExporter::new(
-                handle,
-                http_config.api_version.to_owned(),
-                http_config.gzip,
-                http_config.endpoint.to_owned(),
-                http_config.username.as_ref(),
-                http_config.password.as_ref(),
-            )
-            .map(|e| Box::new(e) as Box<dyn InfluxExporter>),
-        };
-        let mut exporter = match exporter_result {
-            Ok(exporter) => exporter,
-            Err(e) => {
-                error!("failed to flush metrics on shutdown: {e}");
-                return;
-            }
-        };
-        let flush = async move {
-            if let Err(e) = exporter.write().await {
-                error!("failed to flush metrics on shutdown: {e}");
-            }
-        };
-        let rt_handle = if let Ok(h) = runtime::Handle::try_current() {
-            h
-        } else {
-            match runtime::Builder::new_multi_thread()
-                .worker_threads(1)
-                .enable_all()
-                .build()
-            {
-                // Leak the runtime so it stays alive for the flush.
-                // This is a one-shot path — the process is shutting down.
-                Ok(rt) => {
-                    let handle = rt.handle().clone();
-                    std::mem::forget(rt);
-                    handle
+    /// Signals the exporter to flush and exit, then joins the task.
+    pub fn close(self) {
+        self.shutdown_notify.notify_one();
+        let jh = self.jh;
+        let rt_handle = self.rt_handle;
+        let join_thread = thread::spawn(move || {
+            rt_handle.block_on(async {
+                match jh.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => error!("exporter error on shutdown: {e}"),
+                    Err(e) => error!("exporter task panicked: {e}"),
                 }
-                Err(e) => {
-                    error!("failed to flush metrics on shutdown: {e}");
-                    return;
-                }
-            }
-        };
-        let join_handle = thread::spawn(move || rt_handle.block_on(flush));
-        if join_handle.join().is_err() {
-            error!("failed to flush metrics on shutdown");
+            });
+        });
+        if join_thread.join().is_err() {
+            error!("failed to join exporter on shutdown");
         }
+        // _owned_rt drops here — shuts down the runtime if we created it
     }
 }
 
