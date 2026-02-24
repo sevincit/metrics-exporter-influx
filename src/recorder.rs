@@ -55,7 +55,7 @@ pub(crate) struct Inner {
 pub struct InfluxRecorder {
     inner: Arc<Inner>,
     exporter_config: ExporterConfig,
-    shutdown_notify: Arc<Notify>,
+    pub(crate) shutdown_notify: Arc<Notify>,
 }
 
 impl InfluxRecorder {
@@ -69,10 +69,6 @@ impl InfluxRecorder {
             exporter_config,
             shutdown_notify,
         }
-    }
-
-    pub(crate) fn shutdown_notify(&self) -> Arc<Notify> {
-        self.shutdown_notify.clone()
     }
 
     pub(crate) fn handle(&self) -> InfluxHandle {
@@ -116,7 +112,7 @@ impl InfluxRecorder {
             self.shutdown_notify.clone(),
             exporter_task,
             runtime::Handle::current(),
-            None,
+            None, // caller owns the runtime
         )
     }
 }
@@ -168,7 +164,7 @@ impl Recorder for InfluxRecorder {
 pub struct InfluxShutdownHandle {
     shutdown_notify: Arc<Notify>,
     exporter_task: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
-    runtime: runtime::Handle,
+    runtime_handle: runtime::Handle,
     /// Holds the runtime alive when we created it ourselves.
     /// Dropped after the task is joined in close().
     _owned_runtime: Option<runtime::Runtime>,
@@ -178,13 +174,13 @@ impl InfluxShutdownHandle {
     pub(crate) fn new(
         shutdown_notify: Arc<Notify>,
         exporter_task: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
-        runtime: runtime::Handle,
+        runtime_handle: runtime::Handle,
         owned_runtime: Option<runtime::Runtime>,
     ) -> Self {
         Self {
             shutdown_notify,
             exporter_task,
-            runtime,
+            runtime_handle,
             _owned_runtime: owned_runtime,
         }
     }
@@ -193,9 +189,9 @@ impl InfluxShutdownHandle {
     pub fn close(self) {
         self.shutdown_notify.notify_one();
         let exporter_task = self.exporter_task;
-        let runtime = self.runtime;
+        let runtime_handle = self.runtime_handle;
         let blocking_thread = thread::spawn(move || {
-            runtime.block_on(async {
+            runtime_handle.block_on(async {
                 match exporter_task.await {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => error!("exporter error on shutdown: {e}"),

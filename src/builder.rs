@@ -228,8 +228,8 @@ impl InfluxBuilder {
     /// shutdown. The caller is responsible for calling
     /// [`metrics::set_global_recorder`].
     pub fn build_and_spawn(self) -> Result<(InfluxRecorder, InfluxShutdownHandle), BuildError> {
-        let (owned_runtime, runtime) = if let Ok(h) = runtime::Handle::try_current() {
-            (None, h)
+        let (runtime_handle, _owned_runtime) = if let Ok(h) = runtime::Handle::try_current() {
+            (h, None)
         } else {
             let rt = runtime::Builder::new_multi_thread()
                 .worker_threads(1)
@@ -237,19 +237,19 @@ impl InfluxBuilder {
                 .build()
                 .map_err(|e| BuildError::FailedToCreateRuntime(e.to_string()))?;
             let h = rt.handle().clone();
-            (Some(rt), h)
+            (h, Some(rt))
         };
 
         let (recorder, exporter) = {
-            let _g = runtime.enter();
+            let _g = runtime_handle.enter();
             self.build()?
         };
-        let exporter_task = runtime.spawn(exporter);
+        let exporter_task = runtime_handle.spawn(exporter);
         let shutdown_handle = InfluxShutdownHandle::new(
-            recorder.shutdown_notify(),
+            recorder.shutdown_notify.clone(),
             exporter_task,
-            runtime,
-            owned_runtime,
+            runtime_handle,
+            _owned_runtime,
         );
         Ok((recorder, shutdown_handle))
     }
