@@ -5,6 +5,7 @@ use crate::http::APIVersion;
 use crate::matcher::Matcher;
 use crate::recorder::{ExporterConfig, HttpConfig, InfluxRecorder, InfluxShutdownHandle, Inner};
 use crate::registry::AtomicStorage;
+use metrics::SetRecorderError;
 use metrics_util::registry::Registry;
 use metrics_util::{parse_quantiles, Quantile};
 #[cfg(feature = "http")]
@@ -39,7 +40,7 @@ pub enum BuildError {
     FailedToCreateRuntime(String),
     /// Installing the recorder did not succeed.
     #[error("failed to install exporter as global recorder: {0}")]
-    FailedToSetGlobalRecorder(String),
+    FailedToSetGlobalRecorder(#[from] SetRecorderError<InfluxRecorder>),
     /// Empty buckets or quantiles
     #[error("empty buckets or quantiles")]
     EmptyBucketsOrQuantiles,
@@ -260,8 +261,7 @@ impl InfluxBuilder {
     /// [`InfluxShutdownHandle`] is fully wired for graceful shutdown.
     pub fn install(self) -> Result<InfluxShutdownHandle, BuildError> {
         let (recorder, shutdown_handle) = self.build_and_spawn()?;
-        metrics::set_global_recorder(recorder)
-            .map_err(|e| BuildError::FailedToSetGlobalRecorder(format!("{e:?}")))?;
+        metrics::set_global_recorder(recorder)?;
         Ok(shutdown_handle)
     }
 }
