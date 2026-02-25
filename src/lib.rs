@@ -10,3 +10,4 @@ mod registry;
 
 pub use builder::*;
 pub use data::MetricData;
+pub use recorder::{InfluxRecorder, InfluxShutdownHandle};

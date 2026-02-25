@@ -21,7 +21,7 @@
 
 use crate::distribution::Distribution;
 use metrics::{atomics::AtomicU64, HistogramFn};
-use metrics_util::AtomicBucket;
+use metrics_util::storage::AtomicBucket;
 use quanta::Instant;
 use std::sync::Arc;
 

@@ -18,7 +18,7 @@ async fn write_influx() -> anyhow::Result<()> {
             .query_param("precision", "ns")
             .matches(|request| match &request.body {
                 Some(body) => {
-                    let expected = vec![
+                    let expected = [
                         "counter,tag0=value0,tag1=value1,tag2=value2,tag3=value3 field0=false,field1=\"0\",value=0i",
                         "counter,tag0=value0,tag1=value1,tag2=value2,tag3=value3 field0=false,field1=\"0\",value=2i",
                         "gauge,tag0=value0 field0=false,value=-1000",
@@ -57,21 +57,20 @@ async fn write_influx() -> anyhow::Result<()> {
 
     counter!(
         "counter",
-        2,
         "tag1" => "value1",
         "tag2" => "value2",
         "tag:tag3" => "value3",
         "field:field1" => "0",
-    );
+    )
+    .increment(2);
 
-    gauge!("gauge", -1000.0);
+    gauge!("gauge").set(-1000.0);
 
     for i in 0..100 {
-        histogram!("histogram", i as f64);
+        histogram!("histogram").record(i as f64);
     }
 
     handle.close();
-    unsafe { metrics::clear_recorder() }
 
     mock.assert();
     Ok(())

@@ -3,7 +3,7 @@ use metrics_exporter_influx::InfluxBuilder;
 use std::io::{Read, Seek};
 use tempfile::tempfile;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn write_file() -> anyhow::Result<()> {
     let mut temp = tempfile()?;
     let handle = InfluxBuilder::new()
@@ -12,28 +12,27 @@ async fn write_file() -> anyhow::Result<()> {
 
     counter!(
         "counter",
-        2,
         "tag1" => "value1",
         "tag2" => "value2",
         "tag:tag3" => "value3",
         "field:field1" => "0",
-    );
+    )
+    .increment(2);
 
-    gauge!("gauge", -1000.0);
+    gauge!("gauge").set(-1000.0);
 
     for i in 0..100 {
-        histogram!("histogram", i as f64);
+        histogram!("histogram").record(i as f64);
     }
 
     handle.close();
-    unsafe { metrics::clear_recorder() }
 
     // read results into string
     let mut results = String::new();
     temp.rewind()?;
     temp.read_to_string(&mut results)?;
 
-    let expected = vec![
+    let expected = [
         "counter,tag1=value1,tag2=value2,tag3=value3 field1=\"0\",value=0i",
         "counter,tag1=value1,tag2=value2,tag3=value3 field1=\"0\",value=2i",
         "gauge value=-1000",

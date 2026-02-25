@@ -79,3 +79,52 @@ async fn main() {
         .install()?;
 }
 ```
+
+## Builder API
+
+The exporter runs as a tokio task. A tokio runtime should already be active
+(e.g. via `#[tokio::main]`) when calling `build()`, `build_and_spawn()`, or
+`install()`. If no runtime is found, one will be created automatically, but
+this is not the preferred path.
+
+`InfluxBuilder` provides three ways to create a recorder and exporter:
+
+| Method | Returns | Description |
+|---|---|---|
+| `build()` | `(InfluxRecorder, ExporterFuture)` | Caller spawns the exporter future, passes the task to [`shutdown_handle()`](#graceful-shutdown), and calls `set_global_recorder()`. |
+| `build_and_spawn()` | `(InfluxRecorder, InfluxShutdownHandle)` | Spawns the exporter internally. Caller calls `set_global_recorder()`. |
+| `install()` | `InfluxShutdownHandle` | Spawns the exporter and sets the global recorder. The most common entry point. |
+
+### Graceful Shutdown
+
+Calling `close()` on an `InfluxShutdownHandle` signals the background exporter loop
+to perform a final flush, then joins the task. This ensures no metrics are lost when
+the process exits (e.g. receiving SIGTERM).
+
+```rust
+let handle = InfluxBuilder::new()
+    .with_grafana_cloud_api(endpoint, username, password)?
+    .install()?;
+
+// ... application runs ...
+
+handle.close(); // final flush + join
+```
+
+For `build()` callers who spawn the exporter themselves, wire the task back in for
+a clean shutdown:
+
+```rust
+let (recorder, exporter) = InfluxBuilder::new()
+    .with_grafana_cloud_api(endpoint, username, password)?
+    .build()?;
+
+let exporter_task = tokio::spawn(exporter);
+let shutdown = recorder.shutdown_handle(exporter_task);
+
+metrics::set_global_recorder(recorder).unwrap();
+
+// ... application runs ...
+
+shutdown.close(); // signal → final flush → join
+```

@@ -6,7 +6,9 @@ use crate::registry::AtomicStorage;
 use crate::BuildError;
 use chrono::{Duration, Utc};
 use itertools::Itertools;
-use metrics::{Counter, Gauge, Histogram, Key, KeyName, Label, Recorder, SharedString, Unit};
+use metrics::{
+    Counter, Gauge, Histogram, Key, KeyName, Label, Metadata, Recorder, SharedString, Unit,
+};
 use metrics_util::registry::Registry;
 use quanta::Instant;
 use reqwest::Url;
@@ -17,7 +19,7 @@ use std::sync::Arc;
 use std::sync::Mutex as SyncMutex;
 use std::thread;
 use tokio::runtime;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tracing::error;
 use tracing::log::debug;
 
@@ -38,15 +40,6 @@ pub(crate) struct HttpConfig {
     pub(crate) password: Option<String>,
 }
 
-impl ExporterConfig {
-    pub fn as_type_str(&self) -> &str {
-        match self {
-            Self::Http { .. } => "http",
-            Self::File(_) => "file",
-        }
-    }
-}
-
 pub(crate) struct Inner {
     pub registry: Registry<Key, AtomicStorage>,
     pub global_tags: HashMap<String, String>,
@@ -55,20 +48,30 @@ pub(crate) struct Inner {
     pub counter_registrations: SyncMutex<HashSet<Key>>,
 }
 
+/// A [`metrics::Recorder`] implementation that writes to InfluxDB line protocol.
+///
+/// Created via [`InfluxBuilder::build`], [`InfluxBuilder::build_and_spawn`],
+/// or [`InfluxBuilder::install`].
 pub struct InfluxRecorder {
     inner: Arc<Inner>,
     exporter_config: ExporterConfig,
+    pub(crate) shutdown_notify: Arc<Notify>,
 }
 
 impl InfluxRecorder {
-    pub(crate) fn new(inner: Arc<Inner>, exporter_config: ExporterConfig) -> Self {
+    pub(crate) fn new(
+        inner: Arc<Inner>,
+        exporter_config: ExporterConfig,
+        shutdown_notify: Arc<Notify>,
+    ) -> Self {
         Self {
             inner,
             exporter_config,
+            shutdown_notify,
         }
     }
 
-    pub fn handle(&self) -> InfluxHandle {
+    pub(crate) fn handle(&self) -> InfluxHandle {
         InfluxHandle {
             inner: self.inner.to_owned(),
         }
@@ -91,29 +94,26 @@ impl InfluxRecorder {
             )?)),
         }
     }
-}
 
-impl Drop for InfluxRecorder {
-    fn drop(&mut self) {
-        if let Ok(handle) = runtime::Handle::try_current() {
-            match self.exporter() {
-                Ok(mut exporter) => {
-                    let thread_handle = thread::spawn(move || {
-                        handle.block_on(async move {
-                            if let Err(e) = exporter.write().await {
-                                error!("failed to flush metrics on drop `{e}`");
-                            }
-                        })
-                    });
-                    if thread_handle.join().is_err() {
-                        error!("failed to flush metrics on drop");
-                    }
-                }
-                Err(e) => {
-                    error!("failed to flush metrics on drop `{e}`");
-                }
-            }
-        }
+    /// Returns a shutdown handle wired to the given tokio task.
+    ///
+    /// Use this with [`InfluxBuilder::build`] after spawning the exporter future:
+    ///
+    /// ```ignore
+    /// let (recorder, exporter) = builder.build()?;
+    /// let exporter_task = tokio::spawn(exporter);
+    /// let shutdown = recorder.shutdown_handle(exporter_task);
+    /// ```
+    pub fn shutdown_handle(
+        &self,
+        exporter_task: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
+    ) -> InfluxShutdownHandle {
+        InfluxShutdownHandle::new(
+            self.shutdown_notify.clone(),
+            exporter_task,
+            runtime::Handle::current(),
+            None, // caller owns the runtime
+        )
     }
 }
 
@@ -130,12 +130,9 @@ impl Recorder for InfluxRecorder {
         unimplemented!()
     }
 
-    fn register_counter(&self, key: &Key) -> Counter {
+    fn register_counter(&self, key: &Key, _metadata: &Metadata<'_>) -> Counter {
         let mut counter_registrations = self.inner.counter_registrations.lock().unwrap();
         if self.inner.registry.get_counter_handles().contains_key(key) {
-            // it's a little clunky to check for the key then fetch it rather than get and match
-            // on the Option. But returning the Arc<u64> directly seems to make the associated
-            // typing of `Recorder` unhappy
             self.inner
                 .registry
                 .get_or_create_counter(key, |c| c.to_owned().into())
@@ -147,25 +144,74 @@ impl Recorder for InfluxRecorder {
         }
     }
 
-    fn register_gauge(&self, key: &Key) -> Gauge {
+    fn register_gauge(&self, key: &Key, _metadata: &Metadata<'_>) -> Gauge {
         self.inner
             .registry
             .get_or_create_gauge(key, |c| c.to_owned().into())
     }
 
-    fn register_histogram(&self, key: &Key) -> Histogram {
+    fn register_histogram(&self, key: &Key, _metadata: &Metadata<'_>) -> Histogram {
         self.inner
             .registry
             .get_or_create_histogram(key, |b| b.to_owned().into())
     }
 }
 
-pub struct InfluxHandle {
+/// Handle for gracefully shutting down the background exporter loop.
+///
+/// Calling [`close`](Self::close) signals the exporter to perform a final
+/// flush and waits for it to complete.
+pub struct InfluxShutdownHandle {
+    shutdown_notify: Arc<Notify>,
+    exporter_task: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
+    runtime_handle: runtime::Handle,
+    /// Holds the runtime alive when we created it ourselves.
+    /// Dropped after the task is joined in close().
+    _owned_runtime: Option<runtime::Runtime>,
+}
+
+impl InfluxShutdownHandle {
+    pub(crate) fn new(
+        shutdown_notify: Arc<Notify>,
+        exporter_task: tokio::task::JoinHandle<Result<(), anyhow::Error>>,
+        runtime_handle: runtime::Handle,
+        owned_runtime: Option<runtime::Runtime>,
+    ) -> Self {
+        Self {
+            shutdown_notify,
+            exporter_task,
+            runtime_handle,
+            _owned_runtime: owned_runtime,
+        }
+    }
+
+    /// Signals the exporter to flush and exit, then joins the task.
+    pub fn close(self) {
+        self.shutdown_notify.notify_one();
+        let exporter_task = self.exporter_task;
+        let runtime_handle = self.runtime_handle;
+        let blocking_thread = thread::spawn(move || {
+            runtime_handle.block_on(async {
+                match exporter_task.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => error!("exporter error on shutdown: {e}"),
+                    Err(e) => error!("exporter task panicked: {e}"),
+                }
+            });
+        });
+        if blocking_thread.join().is_err() {
+            error!("failed to join exporter on shutdown");
+        }
+        // _owned_runtime drops here — shuts down the runtime if we created it
+    }
+}
+
+pub(crate) struct InfluxHandle {
     inner: Arc<Inner>,
 }
 
 impl InfluxHandle {
-    pub fn render(&self) -> (usize, String) {
+    pub(crate) fn render(&self) -> (usize, String) {
         let gauges = self
             .inner
             .registry
@@ -311,10 +357,6 @@ impl InfluxHandle {
             .sorted()
             .join("\n");
         (count, metrics)
-    }
-
-    pub fn clear(&self) {
-        self.inner.registry.clear();
     }
 }
 

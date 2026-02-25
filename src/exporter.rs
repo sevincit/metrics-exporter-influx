@@ -2,22 +2,32 @@ use crate::recorder::InfluxHandle;
 use async_trait::async_trait;
 use std::io::Write;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::time::Interval;
 use tracing::error;
 
 #[async_trait]
 pub trait InfluxExporter: Send + Sync {
     async fn write(&mut self) -> anyhow::Result<()>;
-    async fn run(&mut self, mut interval: Interval) -> anyhow::Result<()> {
+    async fn run(&mut self, mut interval: Interval, shutdown: Arc<Notify>) -> anyhow::Result<()> {
         // first tick completes immediately, skip it
         interval.tick().await;
         loop {
-            interval.tick().await;
-            if let Err(e) = self.write().await {
-                error!("failed to write metrics `{e:?}`");
+            tokio::select! {
+                _ = interval.tick() => {
+                    if let Err(e) = self.write().await {
+                        error!("failed to write metrics `{e:?}`");
+                    }
+                }
+                _ = shutdown.notified() => {
+                    if let Err(e) = self.write().await {
+                        error!("failed to flush metrics on shutdown: {e}");
+                    }
+                    break;
+                }
             }
         }
+        Ok(())
     }
 }
 
